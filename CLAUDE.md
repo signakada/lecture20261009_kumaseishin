@@ -10,20 +10,32 @@ Google Apps Script プロジェクト。
 ## 1. 開発環境と運用ルール
 
 - Apps Script は Google フォームに紐づいた **コンテナバインド型** プロジェクト
-- ローカルとの同期は clasp を使用
+- ローカルとの同期は clasp を使用（2026-09-04 セットアップ済み）
 
 ```bash
-clasp pull    # GAS 側の最新を取得
+clasp status  # push 対象のファイルを確認（送信なし）
 clasp push    # ローカルの変更を GAS に反映
+clasp pull    # GAS 側の最新を取得（※下記の注意を読むこと）
 ```
 
 **重要なルール**
 
 - ブラウザのスクリプトエディタで直接コードを編集しないこと。`clasp push` は GAS 側を上書きするため、
   ローカルを唯一の正とする
-- `.clasprc.json` には認証トークンが入る。`.gitignore` に必ず含めること
+- **`clasp pull` はローカルを問答無用で上書きする。** 未コミットの変更があるときは実行しない。
+  GAS 側を捨ててよいと確信できる場合のみ使う
+- `.clasprc.json` には認証トークンが入る。`.gitignore` に含めてある
 - push 後、ブラウザ側はリロードしないと反映が見えない
 - **関数の実行・トリガーの登録・実行ログの確認はブラウザのエディタで行う**。clasp はコードの同期のみ担当
+
+**環境**
+
+- clasp 3.4.1 をグローバルインストール（`/opt/homebrew/bin/clasp`）
+- `.clasp.json` にスクリプトIDを保持。これはコミット対象（トークンではない）
+- `.claspignore` で送信対象を `Code.gs` と `appsscript.json` の2つだけに限定している。
+  `clasp push` はプロジェクト全体を置き換えるため、ここに載っていないファイルは
+  **GAS 側から削除される**。ファイルを追加したら `.claspignore` にも追記すること
+- 事前に https://script.google.com/home/usersettings で Apps Script API を有効化してある
 
 ---
 

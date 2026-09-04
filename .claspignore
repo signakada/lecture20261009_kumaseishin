@@ -1,0 +1,5 @@
+# clasp push で GAS 側に送らないもの
+# （書式は .gitignore と異なり、送るものを ! で拾い上げる方式）
+**/**
+!Code.gs
+!appsscript.json
