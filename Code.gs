@@ -126,7 +126,7 @@ function onFormSubmitHandler(e) {
 
   try {
     const submitted = extractAnswers(e.response);
-    const email = submitted[FIELD.email] || '';
+    const email = normalizeEmail(submitted[FIELD.email]);
     if (!email) return;
 
     const roster = buildRoster();
@@ -178,7 +178,7 @@ function buildRoster() {
   const map = {};
   responses.forEach(response => {
     const answers = extractAnswers(response);
-    const email = answers[FIELD.email];
+    const email = normalizeEmail(answers[FIELD.email]);
     if (!email) return;
     if (isCancelled(email)) return; // キャンセル済みは集計から除外
 
@@ -239,16 +239,36 @@ function buildRoster() {
   };
 }
 
-/** テスト用アドレスかどうか（大文字小文字・前後の空白は無視） */
+/**
+ * メールアドレスの表記ゆれを吸収します。
+ *
+ * スマートフォンの日本語入力では「＠」が全角のまま送信されることがあり、
+ * そのままでは送信に失敗して未送信リストに残り続けます。
+ * ここで全角英数記号を半角に直し、空白を取り除いて小文字に揃えます。
+ *
+ * この関数の結果が名簿の集約キー（＝実人数の判定単位）になるため、
+ * 「ABC@example.com」と「abc@example.com」は同一人物として扱われます。
+ */
+function normalizeEmail(raw) {
+  return String(raw || '')
+    // 全角の英数字・記号（！〜～）を半角に。全角＠(U+FF20)もここで直ります
+    .replace(/[\uFF01-\uFF5E]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+    .replace(/\u3000/g, ' ')   // 全角スペースを半角に
+    .replace(/\s+/g, '')       // アドレス内の空白はすべて除去
+    .trim()
+    .toLowerCase();
+}
+
+/** テスト用アドレスかどうか */
 function isTestEmail(email) {
-  const target = String(email).trim().toLowerCase();
-  return CONFIG.testEmails.some(e => String(e).trim().toLowerCase() === target);
+  const target = normalizeEmail(email);
+  return CONFIG.testEmails.some(e => normalizeEmail(e) === target);
 }
 
 /** キャンセル済みのアドレスかどうか */
 function isCancelled(email) {
-  const target = String(email).trim().toLowerCase();
-  return CONFIG.cancelledEmails.some(e => String(e).trim().toLowerCase() === target);
+  const target = normalizeEmail(email);
+  return CONFIG.cancelledEmails.some(e => normalizeEmail(e) === target);
 }
 
 
@@ -546,8 +566,9 @@ function sendMail(to, subject, body, attachments) {
 }
 
 /** 未送信リストへの追加（重複は追加しません） */
-function enqueuePending(email) {
+function enqueuePending(rawEmail) {
   const props = PropertiesService.getScriptProperties();
+  const email = normalizeEmail(rawEmail);
   const list = loadPending();
   if (list.indexOf(email) === -1) {
     list.push(email);
@@ -685,8 +706,9 @@ function promoteWaitlist() {
 
   try {
     const roster = buildRoster();
-    const alreadyAccepted = loadNotified(PROP_NOTIFIED_ACCEPTED);
-    const wasWaitlisted = loadNotified(PROP_NOTIFIED_WAITLIST);
+    // 正規化前に記録された古い分も突き合わせられるよう、読み込み時に揃えます
+    const alreadyAccepted = loadNotified(PROP_NOTIFIED_ACCEPTED).map(e => normalizeEmail(e));
+    const wasWaitlisted = loadNotified(PROP_NOTIFIED_WAITLIST).map(e => normalizeEmail(e));
 
     let promoted = 0;
     roster.accepted.forEach(record => {
@@ -823,7 +845,7 @@ function sendWebinarInfoMails() {
 /** URLの案内がまだ済んでいないオンライン参加者の一覧 */
 function webinarInfoTargets() {
   const roster = buildRoster();
-  const already = loadNotified(PROP_NOTIFIED_WEBINAR);
+  const already = loadNotified(PROP_NOTIFIED_WEBINAR).map(e => normalizeEmail(e));
 
   return roster.accepted.concat(roster.testers)
     .filter(r => r.isOnline)
@@ -898,9 +920,11 @@ function loadNotified(key) {
 
 function markNotified(key, email) {
   const props = PropertiesService.getScriptProperties();
+  const target = normalizeEmail(email);
   const list = loadNotified(key);
-  if (list.indexOf(email) === -1) {
-    list.push(email);
+  // 正規化を導入する前に記録された分と重複しないよう、比較時に両側を揃えます
+  if (!list.some(e => normalizeEmail(e) === target)) {
+    list.push(target);
     props.setProperty(key, JSON.stringify(list));
   }
 }
