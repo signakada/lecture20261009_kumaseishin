@@ -567,6 +567,30 @@ function savePending(list) {
 }
 
 /**
+ * 未送信リストを空にします（手動実行用）。
+ *
+ * メールアドレスの入力誤りなど、何度再送しても送れない宛先が
+ * 残ってしまったときに使います。消した宛先は実行ログに記録されるので、
+ * 後から誰だったか確認できます。
+ *
+ * ※ここで消すのは「送信待ちの控え」だけです。
+ *   フォームの回答そのものは消えません。
+ */
+function clearPendingEmails() {
+  const pending = loadPending();
+  if (!pending.length) {
+    Logger.log('未送信の宛先はありません。');
+    return;
+  }
+
+  savePending([]);
+  Logger.log(
+    `未送信リストを消去しました（${pending.length}件）。\n` +
+    '消去した宛先:\n' + pending.join('\n')
+  );
+}
+
+/**
  * 未送信分の再送。毎日 CONFIG.retryHour 時台に自動実行されます。
  * 送信内容はその時点の名簿から作り直すので、
  * 退避中に受付状況が変わっていても正しい内容が届きます。
