@@ -100,6 +100,26 @@ ICS は RFC5545 の75オクテット行長制限に合わせて折り返し処�
 退避中に繰り上がった人には受付完了メールが届く。
 残しておいた3件分の枠は、事務局への上限到達通知（1日1回）に使う。
 
+### 4.6 Zoom（ウェビナー）情報は後追いで案内する
+
+ウェビナーのURL・ミーティングIDが講演会の申込開始時点で取得できていないため、
+受付完了メールにテスト用URLを載せる方式をやめた。
+
+`CONFIG.online.ready` が false の間は、受付完了メール・繰り上げメール・.ics の
+いずれにも参加用URLを載せず、「確定次第ご案内します」とだけ書く。
+情報が確定したら値を入れて `ready: true` にし、`sendWebinarInfoMails()` を実行すると、
+**まだ案内を受け取っていないオンライン参加者にだけ** 案内メールが届く。
+
+送信済みは `PROP_NOTIFIED_WEBINAR` で管理しているので、何度実行しても二重送信されない。
+申込者が増えたらまた実行すれば差分だけが送られる。
+
+`ready: true` にしたあとの新規申込・繰り上げは、受付完了メールに最初からURLが入る。
+その際も `PROP_NOTIFIED_WEBINAR` に記録するため、後から `sendWebinarInfoMails()` を
+実行しても重複して届かない。
+
+.ics は URL入りの版を SEQUENCE:1、URLなしの版を SEQUENCE:0 として発行している。
+UID は同じなので、案内メールに添付された .ics を開くと既存の予定が上書きされる。
+
 ---
 
 ## 5. 主要な構成
@@ -110,7 +130,8 @@ ICS は RFC5545 の75オクテット行長制限に合わせて折り返し処�
 
 | キー | 説明 |
 | --- | --- |
-| `online.url` / `meetingId` / `passcode` | **現在テスト値。本番確定後に要差し替え** |
+| `online.ready` | ウェビナー情報を案内してよいか。**確定するまで false** |
+| `online.url` / `meetingId` / `passcode` | **未設定。ウェビナー確定後に要入力** |
 | `capacity` | 現地30 / オンライン300 |
 | `cancelledEmails` | キャンセルした人のアドレス。集計から除外される |
 | `testEmails` | テスト用。席を消費せず常に受付完了メールが届く |
@@ -129,6 +150,11 @@ ICS は RFC5545 の75オクテット行長制限に合わせて折り返し処�
 | `sendMail()` | 送信上限チェックと退避を内包したラッパー。**直接 MailApp を呼ばないこと** |
 | `flushPendingEmails()` | 未送信分の再送（日次トリガー + 手動） |
 | `promoteWaitlist()` | キャンセル後の繰り上げ通知 |
+| `sendWebinarInfoMails()` | ウェビナー確定後、未案内のオンライン参加者にURLを送る |
+| `showWebinarInfoTargets()` | 案内がまだの人を実行ログに表示。副作用なし |
+| `previewWebinarInfoMail()` | 案内メール本文を実行ログに表示。副作用なし |
+| `isOnlineInfoReady()` | `ready` かつ URL が入っているか。全分岐の判定元 |
+| `buildOnlineInfoBlock()` | オンライン案内ブロック。未確定なら「後日ご案内」の文面 |
 | `updateFormAvailability()` | 満席時に選択肢を閉じる / 空きが出たら再開 |
 | `showCurrentCounts()` | 申込状況を実行ログに表示。副作用なし |
 | `previewCalendarFile()` | .ics の中身を実行ログに表示。副作用なし |
@@ -156,19 +182,27 @@ ICS は RFC5545 の75オクテット行長制限に合わせて折り返し処�
 
 送信済み記録はスクリプトプロパティに保持しているため、`promoteWaitlist` を複数回実行しても二重送信されない。
 
+### ウェビナーのURLが確定したとき
+1. `CONFIG.online` の `url` / `meetingId` / `passcode` を入力し、`ready: true` にする
+2. `clasp push`
+3. ブラウザで `previewCalendarFile` と `previewWebinarInfoMail` を実行して内容を確認
+4. `showWebinarInfoTargets` で送信対象を確認
+5. `sendWebinarInfoMails` を実行
+
+以降の新規申込には、受付完了メールに最初からURLが入る。
+申込者が増えたら `sendWebinarInfoMails` をもう一度実行すれば、差分だけが送られる。
+
 ### 注意
 スクリプトプロパティの送信済み記録を消すと、既存の受付済み全員に受付完了メールが再送される。
-`PROP_NOTIFIED_ACCEPTED` / `PROP_NOTIFIED_WAITLIST` を安易にクリアしないこと。
+`PROP_NOTIFIED_ACCEPTED` / `PROP_NOTIFIED_WAITLIST` / `PROP_NOTIFIED_WEBINAR` を安易にクリアしないこと。
 
 ---
 
 ## 7. 残タスク
 
-- [ ] **Zoom 情報の差し替え**（最優先）
-  - `CONFIG.online` の3項目を本番値に
-  - `buildConfirmationBody()` 内の「※現時点ではテスト用の情報です。確定次第、改めて正式なご案内をお送りします。」を削除
-  - `buildPromotionBody()` 内の同じ一文も削除
-  - 差し替え後に `previewCalendarFile` で .ics の内容を確認
+- [ ] **ウェビナー情報の入手と案内**（最優先）
+  - `CONFIG.online` の3項目を本番値にし、`ready: true` に
+  - 上記「ウェビナーのURLが確定したとき」の手順で `sendWebinarInfoMails` を実行
 - [ ] 本番公開前に、`testEmails` に自分のアドレスを登録した状態でテスト送信し、
       .ics がカレンダーに正しく登録されるところまで確認
 - [ ] （必要なら）送信元アカウントを Google Workspace に移し、上限を1,500件に引き上げる

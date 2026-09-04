@@ -37,11 +37,23 @@ const CONFIG = {
   autoUpdateForm: true,
   closedMessage: '定員に達したため、受付を終了いたしました。たくさんのお申し込みをありがとうございました。',
 
-  // ↓↓↓ オンライン設定が確定したら、ここを本番の値に差し替えてください ↓↓↓
+  // ↓↓↓ オンライン（ウェビナー）の設定 ↓↓↓
+  // ウェビナーのURL等がまだ取得できていない間は ready を false のままにしてください。
+  // false の間は、受付完了メール・繰り上げメール・.ics のいずれにも
+  // 参加用URLを載せず、「確定次第ご案内します」という文言だけを入れます。
+  //
+  // ウェビナー情報が確定したら
+  //   1) url / meetingId / passcode を本番の値に書き換える
+  //   2) ready を true にする
+  //   3) clasp push
+  //   4) ブラウザのエディタで sendWebinarInfoMails を実行
+  // の順で操作すると、まだ案内を受け取っていないオンライン参加者にだけ
+  // 【オンライン参加URLのご案内】メールが届きます。
   online: {
-    url: 'https://us02web.zoom.us/j/86346306878?pwd=XE869FSpajBVW8txBBW6n7LzlTe3Ap.1',   // テストURL
-    meetingId: '863 4630 6878',              // テスト ミーティングID
-    passcode: '20261009',                     // テスト パスコード
+    ready: false,
+    url: '',
+    meetingId: '',
+    passcode: '',
   },
 
   fromName: '熊本県精神神経科診療所協会 事務局',
@@ -88,6 +100,7 @@ const PROP_PENDING = 'PENDING_EMAILS';
 const PROP_ALERT_DATE = 'QUOTA_ALERT_DATE';
 const PROP_NOTIFIED_ACCEPTED = 'NOTIFIED_ACCEPTED'; // 受付完了メールを送信済みの宛先
 const PROP_NOTIFIED_WAITLIST = 'NOTIFIED_WAITLIST'; // キャンセル待ちメールを送信済みの宛先
+const PROP_NOTIFIED_WEBINAR  = 'NOTIFIED_WEBINAR';  // オンライン参加URLを案内済みの宛先
 
 
 // ------------------------------------------------------------
@@ -134,7 +147,11 @@ function sendRegistrationMail(record, counts) {
     const body = buildConfirmationBody(record.name, record.affiliation, record.isOnline);
     const ics = buildCalendarBlob(record.isOnline);
     const ok = sendMail(record.email, subject, body, [ics]);
-    if (ok) markNotified(PROP_NOTIFIED_ACCEPTED, record.email);
+    if (ok) {
+      markNotified(PROP_NOTIFIED_ACCEPTED, record.email);
+      // URL入りで送れた場合は、あとから sendWebinarInfoMails で二重に案内しないよう記録
+      if (record.isOnline && isOnlineInfoReady()) markNotified(PROP_NOTIFIED_WEBINAR, record.email);
+    }
     return ok;
   } else {
     const subject = `【キャンセル待ち】${CONFIG.eventName}のお申し込みについて`;
@@ -238,6 +255,34 @@ function isCancelled(email) {
 // ------------------------------------------------------------
 // ③ メール本文
 // ------------------------------------------------------------
+/** ウェビナー（オンライン参加）の情報が案内できる状態かどうか */
+function isOnlineInfoReady() {
+  return !!(CONFIG.online.ready && CONFIG.online.url);
+}
+
+/**
+ * オンライン参加者向けの案内ブロック。
+ * ウェビナー情報が未確定のうちはURLを載せず、後日案内する旨だけを書きます。
+ */
+function buildOnlineInfoBlock() {
+  if (!isOnlineInfoReady()) {
+    return `
+【オンライン参加用URLについて】
+オンライン参加用のURL・ミーティングIDは現在準備中です。
+確定次第、事務局より改めてご案内のメールをお送りいたしますので、
+今しばらくお待ちくださいますようお願いいたします。
+`;
+  }
+
+  return `
+【オンライン参加に必要な情報】
+
+URL　　　　　：${CONFIG.online.url}
+ミーティングID：${CONFIG.online.meetingId}
+パスコード　　：${CONFIG.online.passcode}
+`;
+}
+
 function buildConfirmationBody(name, affiliation, isOnline) {
   const salutation = `${affiliation || ''}${name ? name + '　' : ''}様`;
 
@@ -259,15 +304,7 @@ ${CONFIG.eventName}にお申し込みいただきありがとうございます�
 `;
 
   if (isOnline) {
-    body +=
-`
-【オンライン参加に必要な情報】
-※現時点ではテスト用の情報です。確定次第、改めて正式なご案内をお送りします。
-
-URL　　　　　：${CONFIG.online.url}
-ミーティングID：${CONFIG.online.meetingId}
-パスコード　　：${CONFIG.online.passcode}
-`;
+    body += buildOnlineInfoBlock();
   }
 
   body +=
@@ -276,7 +313,7 @@ URL　　　　　：${CONFIG.online.url}
 本メールに予定表ファイル（lecture-20261009.ics）を添付しております。
 添付ファイルを開いてカレンダーに登録していただきますと、
 前日と当日17時に、お使いの端末から自動で通知が届きます。
-${isOnline ? '参加用のURLも予定の詳細欄に記載されています。\n' : ''}
+${isOnline && isOnlineInfoReady() ? '参加用のURLも予定の詳細欄に記載されています。\n' : ''}
 なお、事務局からの当日のリマインドメールは送付いたしません。
 お手数ですが、カレンダーへのご登録をお願いいたします。
 
@@ -349,14 +386,17 @@ function buildCalendarBlob(isOnline) {
   const dtEnd   = toUtcStamp(d.year, d.month, d.day, CONFIG.eventEnd.hour,   CONFIG.eventEnd.minute);
   const dtStamp = Utilities.formatDate(new Date(), 'UTC', "yyyyMMdd'T'HHmmss'Z'");
 
-  const location = isOnline ? 'オンライン（Zoom）' : CONFIG.venue;
+  const infoReady = isOnlineInfoReady();
+  const location = isOnline
+    ? (infoReady ? 'オンライン（Zoom）' : 'オンライン（URLは後日ご案内します）')
+    : CONFIG.venue;
 
   let description =
 `演題：災害メンタルヘルスを通して拓く精神医療・医学の未来
 ～東日本大震災後15年の東北と本邦における軌跡、そして熊本とともに描く精神医療保健のあり方～
 演者：東北大学大学院医学系研究科 精神神経学分野 教授 富田 博秋 先生`;
 
-  if (isOnline) {
+  if (isOnline && infoReady) {
     description +=
 `
 
@@ -364,6 +404,12 @@ function buildCalendarBlob(isOnline) {
 URL：${CONFIG.online.url}
 ミーティングID：${CONFIG.online.meetingId}
 パスコード：${CONFIG.online.passcode}`;
+  } else if (isOnline) {
+    description +=
+`
+
+【オンライン参加情報】
+参加用URLは準備中です。確定次第、事務局よりメールでご案内いたします。`;
   } else {
     description += `
 
@@ -382,6 +428,8 @@ URL：${CONFIG.online.url}
     'METHOD:PUBLISH',
     'BEGIN:VEVENT',
     `UID:kumaseishin-20261009-${isOnline ? 'online' : 'onsite'}@kumaseishin.com`,
+    // URL入りの版を後から送るとき、カレンダー側が既存の予定を上書きできるよう番号を上げます
+    `SEQUENCE:${isOnline && infoReady ? 1 : 0}`,
     `DTSTAMP:${dtStamp}`,
     `DTSTART:${dtStart}`,
     `DTEND:${dtEnd}`,
@@ -390,7 +438,7 @@ URL：${CONFIG.online.url}
     `DESCRIPTION:${escapeIcsText(description)}`,
   ];
 
-  if (isOnline) {
+  if (isOnline && infoReady) {
     lines.push(`URL:${CONFIG.online.url}`);
   }
 
@@ -630,6 +678,7 @@ function promoteWaitlist() {
 
       if (sendMail(record.email, subject, body, [buildCalendarBlob(record.isOnline)])) {
         markNotified(PROP_NOTIFIED_ACCEPTED, record.email);
+        if (record.isOnline && isOnlineInfoReady()) markNotified(PROP_NOTIFIED_WEBINAR, record.email);
         promoted++;
       }
     });
@@ -672,15 +721,7 @@ ${typeLabel}が定員に達していたためキャンセル待ちとしてご�
 `;
 
   if (isOnline) {
-    body +=
-`
-【オンライン参加に必要な情報】
-※現時点ではテスト用の情報です。確定次第、改めて正式なご案内をお送りします。
-
-URL　　　　　：${CONFIG.online.url}
-ミーティングID：${CONFIG.online.meetingId}
-パスコード　　：${CONFIG.online.passcode}
-`;
+    body += buildOnlineInfoBlock();
   }
 
   body +=
@@ -689,7 +730,7 @@ URL　　　　　：${CONFIG.online.url}
 本メールに予定表ファイル（lecture-20261009.ics）を添付しております。
 添付ファイルを開いてカレンダーに登録していただきますと、
 前日と当日17時に、お使いの端末から自動で通知が届きます。
-${isOnline ? '参加用のURLも予定の詳細欄に記載されています。\n' : ''}
+${isOnline && isOnlineInfoReady() ? '参加用のURLも予定の詳細欄に記載されています。\n' : ''}
 ご都合が合わなくなった場合は、恐れ入りますが本メールへご返信ください。
 
 --------------------------------------------
@@ -699,6 +740,130 @@ ${CONFIG.fromName}
 
   return body;
 }
+
+// ------------------------------------------------------------
+// ⑥-2 オンライン参加URL（ウェビナー情報）の後追い案内
+// ------------------------------------------------------------
+/**
+ * ウェビナーのURLが確定したあとに実行します。
+ *
+ * 事前に CONFIG.online の url / meetingId / passcode を本番の値にして、
+ * ready を true にしたうえで clasp push しておいてください。
+ *
+ * 受付済みのオンライン参加者のうち、まだURLを案内していない方にだけ
+ * 【オンライン参加URLのご案内】メールを送ります。
+ * 送信済みの記録はスクリプトプロパティに残るため、
+ * 何度実行しても同じ方に二重送信されることはありません。
+ * （申込者が増えたら、また実行すれば差分だけが送られます）
+ */
+function sendWebinarInfoMails() {
+  if (!isOnlineInfoReady()) {
+    Logger.log(
+      'ウェビナー情報がまだ設定されていません。\n' +
+      'CONFIG.online の url / meetingId / passcode を入力し、ready を true にしてから実行してください。'
+    );
+    return;
+  }
+
+  const lock = LockService.getScriptLock();
+  try { lock.waitLock(30000); } catch (err) {}
+
+  try {
+    const targets = webinarInfoTargets();
+    if (!targets.length) {
+      Logger.log('オンライン参加URLの案内が必要な方はいません。');
+      return;
+    }
+
+    let sent = 0;
+    targets.forEach(record => {
+      const subject = `【オンライン参加URLのご案内】${CONFIG.eventName}`;
+      const body = buildWebinarInfoBody(record.name, record.affiliation);
+      if (sendMail(record.email, subject, body, [buildCalendarBlob(true)])) {
+        markNotified(PROP_NOTIFIED_WEBINAR, record.email);
+        sent++;
+      }
+    });
+
+    Logger.log(
+      `オンライン参加URLの案内: ${sent}名に送信しました（対象 ${targets.length}名）。\n` +
+      (sent < targets.length
+        ? '送れなかった分は未送信リストに退避しています。翌日の自動再送、または flushPendingEmails をご確認ください。'
+        : '')
+    );
+  } finally {
+    try { lock.releaseLock(); } catch (err) {}
+  }
+}
+
+/** URLの案内がまだ済んでいないオンライン参加者の一覧 */
+function webinarInfoTargets() {
+  const roster = buildRoster();
+  const already = loadNotified(PROP_NOTIFIED_WEBINAR);
+
+  return roster.accepted.concat(roster.testers)
+    .filter(r => r.isOnline)
+    .filter(r => already.indexOf(r.email) === -1);
+}
+
+/** 送信前に対象者を確認します（メールは送りません） */
+function showWebinarInfoTargets() {
+  const targets = webinarInfoTargets();
+  const lines = [
+    `ウェビナー情報の設定：${isOnlineInfoReady() ? '入力済み（送信できます）' : '未入力（sendWebinarInfoMails は動きません）'}`,
+    `URL：${CONFIG.online.url || '（未設定）'}`,
+    `ミーティングID：${CONFIG.online.meetingId || '（未設定）'}`,
+    `パスコード：${CONFIG.online.passcode || '（未設定）'}`,
+    '',
+    `案内がまだの方：${targets.length} 名`,
+  ];
+  targets.forEach(r => lines.push(`${r.affiliation} ${r.name}　${r.email}${r.isTest ? '　※テスト用' : ''}`));
+  Logger.log(lines.join('\n'));
+}
+
+/** 案内メールの本文を確認します（メールは送りません） */
+function previewWebinarInfoMail() {
+  Logger.log(buildWebinarInfoBody('山田 太郎', '〇〇クリニック'));
+}
+
+function buildWebinarInfoBody(name, affiliation) {
+  const salutation = `${affiliation || ''}${name ? name + '　' : ''}様`;
+
+  return (
+`${salutation}
+
+${CONFIG.eventName}にお申し込みいただきありがとうございます。
+オンライン参加用のURLが確定いたしましたので、ご案内申し上げます。
+
+【開催概要】
+日時：${CONFIG.eventDateLabel}　${CONFIG.eventTimeLabel}
+形式：オンライン（Zoom）
+
+演題:災害メンタルヘルスを通して拓く精神医療・医学の未来 
+～東日本大震災後15年の東北と本邦における軌跡、 
+そして熊本とともに描く精神医療保健のあり方～
+演者:東北大学大学院医学系研究科 精神神経学分野 教授 富田 博秋 先生
+` +
+buildOnlineInfoBlock() +
+`
+参加用URLは、お申し込みいただいたご本人のみでご利用ください。
+
+【カレンダーへのご登録のお願い】
+本メールに、参加用URLを記載した予定表ファイル（lecture-20261009.ics）を
+添付しております。以前にご登録いただいた予定に上書きされ、
+前日と当日17時に、お使いの端末から自動で通知が届きます。
+
+なお、事務局からの当日のリマインドメールは送付いたしません。
+お手数ですが、カレンダーへのご登録をお願いいたします。
+
+ご不明な点がございましたら本メールへご返信ください。
+
+--------------------------------------------
+${CONFIG.fromName}
+--------------------------------------------
+`);
+}
+
 
 /** 送信済み記録の管理 */
 function loadNotified(key) {
@@ -793,6 +958,9 @@ function showCurrentCounts() {
     `キャンセル済み：${CONFIG.cancelledEmails.length} 名`,
     `本日の残り送信可能数：${MailApp.getRemainingDailyQuota()} 件`,
     `未送信メール：${pending.length} 件`,
+    `オンライン参加URLの案内：${isOnlineInfoReady()
+      ? `送信可能（案内がまだの方 ${webinarInfoTargets().length} 名）`
+      : 'ウェビナー情報が未設定のため保留中'}`,
     '',
     '［キャンセル待ちの方］',
   ];
