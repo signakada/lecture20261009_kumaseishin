@@ -64,6 +64,7 @@ const CONFIG = {
   // 追記して保存したあと promoteWaitlist を実行すると、
   // 繰り上がった方に受付完了メールが自動で送られます。
   cancelledEmails: [
+    '八代更生病院', // メールアドレス欄に所属名が入力されたもの。連絡手段がないため集計から除外
     // 'cancelled-person@example.com',
   ],
 
